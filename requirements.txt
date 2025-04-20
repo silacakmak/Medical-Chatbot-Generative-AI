@@ -8,4 +8,6 @@ langchain-pinecone
 langchain_community
 langchain_openai
 langchain_experimental
--e .
+pydantic==1.10.12
+weaviate-client
+-e .     
