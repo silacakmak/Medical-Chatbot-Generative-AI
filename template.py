@@ -9,7 +9,7 @@ list_offiles = [
     "src/prompt.py",
     ".env",
     "setup.py",
-    "research/trials.ipynb"
+    "research/trials.py"
 ]
 
 for filepath in list_offiles:
