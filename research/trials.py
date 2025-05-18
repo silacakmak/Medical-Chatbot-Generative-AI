@@ -1,46 +1,59 @@
 import os
 import sys
 from dotenv import load_dotenv
+import weaviate
+from weaviate.classes.init import Auth, AdditionalConfig, Timeout
 
 # Load environment variables
 load_dotenv()
 
-# Set Weaviate environment variables
-os.environ["WEAVIATE_URL"] = "https://9vfyboq2rbqbng4hwnhuqg.c0.us-east1.gcp.weaviate.cloud"
-os.environ["WEAVIATE_API_KEY"] = "5olyn8aWk6Z8IF45eQRc60dKLFQIk6Umdwq1"
+# Get Weaviate credentials from environment
+WEAVIATE_URL = os.getenv("WEAVIATE_URL")
+WEAVIATE_API_KEY = os.getenv("WEAVIATE_API_KEY")
+
+if not WEAVIATE_URL or not WEAVIATE_API_KEY:
+    print("❌ Error: WEAVIATE_URL and WEAVIATE_API_KEY must be set in .env file")
+    sys.exit(1)
 
 print("Importing required modules...")
 
 # Import modules with error handling
 try:
-    # Import text splitter
+    from langchain.text_splitter import RecursiveCharacterTextSplitter
+
+    print("✓ Text splitter imported from langchain")
+except ImportError:
     try:
-        from langchain.text_splitter import RecursiveCharacterTextSplitter
+        from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-        print("✓ Text splitter imported from langchain")
+        print("✓ Text splitter imported from langchain_text_splitters")
     except ImportError:
-        try:
-            from langchain_text_splitters import RecursiveCharacterTextSplitter
+        print("❌ Failed to import RecursiveCharacterTextSplitter")
+        print("Please install langchain or langchain_text_splitters")
+        sys.exit(1)
 
-            print("✓ Text splitter imported from langchain_text_splitters")
-        except ImportError:
-            print("❌ Failed to import RecursiveCharacterTextSplitter")
-            sys.exit(1)
+# Updated to use langchain-huggingface
+try:
+    try:
+        from langchain_huggingface import HuggingFaceEmbeddings
 
-    # Import embeddings
-    from langchain_community.embeddings import HuggingFaceEmbeddings
+        print("✓ Embeddings imported from langchain_huggingface")
+    except ImportError:
+        from langchain_community.embeddings import HuggingFaceEmbeddings
 
-    print("✓ Embeddings imported")
+        print("✓ Embeddings imported from langchain_community (consider upgrading to langchain-huggingface)")
+except ImportError:
+    print("❌ Failed to import HuggingFaceEmbeddings")
+    print("Please install langchain-huggingface or langchain-community")
+    sys.exit(1)
 
-    # Import weaviate
+try:
     import weaviate
 
     print("✓ Weaviate imported")
-
-except ImportError as e:
-    print(f"❌ Error importing modules: {str(e)}")
-    print("Please install the required packages using:")
-    print("pip install -r requirements.txt")
+except ImportError:
+    print("❌ Failed to import weaviate")
+    print("Please install weaviate-client")
     sys.exit(1)
 
 
@@ -59,6 +72,8 @@ def get_pdf_loader():
         try:
             loader_module, loader_class = loader_path.rsplit('.', 1)
             module = __import__(loader_module, fromlist=[loader_class])
+
+           # module = _import_(loader_module, fromlist=[loader_class])
             pdf_loader = getattr(module, loader_class)
             print(f"✓ Using {loader_name} for PDF loading")
             return pdf_loader
@@ -139,45 +154,37 @@ def initialize_embeddings():
 
 # Function to connect to Weaviate
 def connect_to_weaviate():
-    # Get credentials from environment variables
-    weaviate_url = os.environ.get("WEAVIATE_URL")
-    weaviate_api_key = os.environ.get("WEAVIATE_API_KEY")
-
-    if not weaviate_url or not weaviate_api_key:
-        raise ValueError("Weaviate URL or API key not found in environment variables")
-
-    # Try different authentication methods for Weaviate
+    """
+    Establishes a connection to Weaviate using environment variables.
+    Returns a connected Weaviate client.
+    Raises ValueError if credentials are missing or ConnectionError if connection fails.
+    """
     try:
-        # Method 1: Using auth_client_secret
-        client = weaviate.Client(
-            url=weaviate_url,
-            auth_client_secret=weaviate.AuthApiKey(api_key=weaviate_api_key)
-        )
-        print("Connected to Weaviate using AuthApiKey")
-        return client
-    except (AttributeError, TypeError) as e:
-        print(f"First connection method failed: {str(e)}")
-        try:
-            # Method 2: Using older API style
-            client = weaviate.Client(
-                url=weaviate_url,
-                auth_client_secret=weaviate.auth.AuthApiKey(api_key=weaviate_api_key)
+        # Connect to Weaviate Cloud using the new method
+        client = weaviate.connect_to_weaviate_cloud(
+            cluster_url=WEAVIATE_URL,
+            auth_credentials=Auth.api_key(WEAVIATE_API_KEY),
+            skip_init_checks=True,
+            additional_config=AdditionalConfig(
+                timeout=Timeout(insert=300)  # Increase timeout for large imports
             )
-            print("Connected to Weaviate using auth.AuthApiKey")
+        )
+
+        if client.is_ready():
+            print("✓ Connected to Weaviate Cloud successfully")
             return client
-        except Exception as e:
-            print(f"Second connection method failed: {str(e)}")
-            try:
-                # Method 3: Using direct API key
-                client = weaviate.Client(
-                    url=weaviate_url,
-                    additional_headers={"Authorization": f"Bearer {weaviate_api_key}"}
-                )
-                print("Connected to Weaviate using additional_headers")
-                return client
-            except Exception as e:
-                print(f"Third connection method failed: {str(e)}")
-                raise ConnectionError("Failed to connect to Weaviate with all available methods")
+        else:
+            raise ConnectionError("Weaviate client is not ready")
+
+    except Exception as e:
+        raise ConnectionError(f"Failed to connect to Weaviate: {str(e)}")
+
+
+# Function to get user query
+def get_user_query():
+    """Get a search query from the user"""
+    print("\n=== Enter Your Query ===")
+    return input("Please enter your medical question: ")
 
 
 # Main execution
@@ -185,27 +192,25 @@ if __name__ == "__main__":
     # Print Python environment info for debugging
     print(f"Python executable: {sys.executable}")
     print(f"Python version: {sys.version}")
+    print(f"Weaviate client version: {weaviate.__version__}")
+   # print(f"Weaviate client version: {weaviate._version_}")
 
-    # Set the path to your data directory - try both absolute and relative paths
-    print("Current working directory:", os.getcwd())
+    # Get the base directory (where the script is located)
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    #base_dir = os.path.dirname(os.path.abspath(_file_))
+    print(f"Base directory: {base_dir}")
 
-    # Try different paths for data
-    possible_paths = [
-        # Original path
-        r"D:\Private\Projeler\Python\Medical-Chatbot-Generative-AI\Data",
-        # Current dir with relative path
-        os.path.join(os.getcwd(), "Data"),
-        # One level up
-        os.path.join(os.getcwd(), "..", "Data"),
-        # Script location based path
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "Data"),
-        # Script location based path (direct)
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "Data"),
+    # Try to find the Data directory
+    data_paths = [
+        r"C:\Users\Sıla\Desktop\med1\Data",  # Specific user path
+        os.path.join(base_dir, "Data"),  # Same level as script
+        os.path.join(base_dir, "..", "Data"),  # One level up
+        os.path.join(os.getcwd(), "Data"),  # Current working directory
     ]
 
     # Find the first valid path
     data_path = None
-    for path in possible_paths:
+    for path in data_paths:
         abs_path = os.path.abspath(path)
         if os.path.exists(abs_path) and os.path.isdir(abs_path):
             data_path = abs_path
@@ -223,119 +228,166 @@ if __name__ == "__main__":
 
     try:
         # Load and process PDF documents
+        print("\n=== Loading PDF Documents ===")
         extracted_data = load_pdf_files(data_path=data_path)
 
         if not extracted_data:
-            print("❌ No documents were loaded. Exiting.")
+            print("❌ No documents were loaded. Please check if there are PDF files in the Data directory.")
             sys.exit(1)
 
         # Split documents into chunks
+        print("\n=== Processing Documents ===")
         text_chunks = text_split(extracted_data)
-        print(f"Length of Text Chunks: {len(text_chunks)}")
+        print(f"✓ Created {len(text_chunks)} text chunks")
 
         # Initialize embeddings
+        print("\n=== Initializing Embeddings ===")
         embeddings = initialize_embeddings()
 
         # Test embedding
-        query_result = embeddings.embed_query("hello world")
-        print(f"Embedding length: {len(query_result)}")
+        test_query = "test query"
+        query_result = embeddings.embed_query(test_query)
+        print(f"✓ Embedding test successful (vector length: {len(query_result)})")
 
         # Connect to Weaviate
+        print("\n=== Connecting to Weaviate ===")
         client = connect_to_weaviate()
-        print(f"Weaviate connection status: {client.is_ready()}")
+        if not client.is_ready():
+            raise ConnectionError("Weaviate client is not ready")
+        print("✓ Connected to Weaviate successfully")
 
         # Create schema in Weaviate
-        class_name = "MedicalDocument"
+        class_name = "medibot"
 
-        # Check if class already exists
-        if not client.schema.exists(class_name):
-            print(f"Creating Weaviate schema for class {class_name}...")
-            schema = {
-                "classes": [
-                    {
-                        "class": class_name,
-                        "description": "Medical document chunks for retrieval",
-                        "vectorizer": "none",  # We'll bring our own vectors
-                        "properties": [
-                            {
-                                "name": "content",
-                                "dataType": ["text"],
-                                "description": "The content of the document chunk"
-                            },
-                            {
-                                "name": "source",
-                                "dataType": ["string"],
-                                "description": "The source document of the chunk"
-                            },
-                            {
-                                "name": "page",
-                                "dataType": ["int"],
-                                "description": "The page number in the source document"
-                            }
-                        ]
-                    }
-                ]
-            }
-            client.schema.create(schema)
-            print("✓ Schema created successfully")
-        else:
-            print(f"✓ Schema for class {class_name} already exists")
+        # Check if collection already exists
+        try:
+            # Check if collection exists
+            try:
+                collection = client.collections.get(class_name)
+                print(f"✓ Collection {class_name} already exists")
+            except Exception:
+                print(f"\n=== Creating Weaviate Schema ===")
+                # Create the collection
+                collection = client.collections.create(
+                    name=class_name,
+                    description="Medical document chunks for retrieval",
+                    vectorizer_config=None,  # We'll bring our own vectors
+                    properties=[
+                        {
+                            "name": "content",
+                            "data_type": "text",
+                            "description": "The content of the document chunk"
+                        },
+                        {
+                            "name": "source",
+                            "data_type": "text",
+                            "description": "The source document of the chunk"
+                        },
+                        {
+                            "name": "page",
+                            "data_type": "number",
+                            "description": "The page number in the source document"
+                        }
+                    ]
+                )
+                print("✓ Schema created successfully")
 
-        # Import data into Weaviate
-        print(f"Importing {len(text_chunks)} chunks into Weaviate...")
-        with client.batch as batch:
-            batch.batch_size = 50  # Process in smaller batches
-            for i, chunk in enumerate(text_chunks):
-                print(f"Processing chunk {i + 1}/{len(text_chunks)}...", end="\r")
+            # Import data into Weaviate
+            print(f"\n=== Importing Data ({len(text_chunks)} chunks) ===")
 
-                # Extract metadata
-                source = chunk.metadata.get("source", "unknown")
-                page = chunk.metadata.get("page", 0)
+            # Use the correct syntax for Weaviate 4.x
+            # For fixed size batch (recommended for predictable memory usage)
+            with collection.batch.fixed_size(batch_size=50) as batch:
+                try:
+                    # Process chunks in batches
+                    for i, chunk in enumerate(text_chunks, 1):
+                        print(f"Processing chunk {i}/{len(text_chunks)}...", end="\r")
 
-                # Create data object
-                data_object = {
-                    "content": chunk.page_content,
-                    "source": source,
-                    "page": page
-                }
+                        # Get metadata with defaults
+                        source = chunk.metadata.get("source", "unknown")
+                        page = chunk.metadata.get("page", 0)
 
-                # Get the embedding vector
-                vector = embeddings.embed_query(chunk.page_content)
+                        try:
+                            # Get the embedding vector
+                            vector = embeddings.embed_query(chunk.page_content)
 
-                # Add to batch
-                batch.add_data_object(
-                    data_object=data_object,
-                    class_name=class_name,
-                    vector=vector
+                            # Add to batch with the correct syntax for Weaviate 4.x
+                            batch.add_object(
+                                properties={
+                                    "content": chunk.page_content,
+                                    "source": source,
+                                    "page": page
+                                },
+                                vector=vector
+                            )
+
+                        except Exception as e:
+                            print(f"\n❌ Error processing chunk {i}: {str(e)}")
+                            continue
+
+                    print("\n✓ All chunks processed!")
+
+                except Exception as e:
+                    print(f"\n❌ Error during batch processing: {str(e)}")
+
+                # Batch context manager automatically calls flush() when exiting the with block
+
+            # Check for failed objects
+            failed_objects = collection.batch.failed_objects
+            if failed_objects:
+                print(f"\n⚠ Warning: {len(failed_objects)} objects failed to import")
+                # Optionally log or handle failed objects
+            else:
+                print("\n✓ Data import complete!")
+
+            # Test a query - using direct fetch_objects for Weaviate 4.8.1
+            print("\n=== Testing Search Query ===")
+            query = get_user_query()
+            try:
+                query_vector = embeddings.embed_query(query)
+
+                # Use a simpler query approach for Weaviate 4.8.1
+                result = collection.query.near_vector(
+                    near_vector=query_vector,
+                    limit=3
                 )
 
-        print("\n✓ Data import complete!")
+                print("\nQuery Results:")
+                if result and hasattr(result, 'objects') and result.objects:
+                    for i, obj in enumerate(result.objects, 1):
+                        print(f"\nResult {i}:")
+                        print(
+                            f"Source: {obj.properties.get('source', 'unknown')} (Page {obj.properties.get('page', 'unknown')})")
+                        content = obj.properties.get('content', '')
+                        print(f"Content: {content[:150]}..." if content else "Content: Not available")
+                else:
+                    print("No results found")
 
-        # Test a query
-        print("Testing a medical query...")
-        query = "What are the symptoms of diabetes?"
-        query_vector = embeddings.embed_query(query)
+            except Exception as e:
+                print(f"❌ Error during query test: {str(e)}")
+                # Print detailed error for debugging
+                import traceback
 
-        result = client.query.get(
-            class_name=class_name,
-            properties=["content", "source", "page"]
-        ).with_near_vector({
-            "vector": query_vector,
-            "certainty": 0.7
-        }).with_limit(3).do()
+                traceback.print_exc()
 
-        print("\nQuery Results:")
-        if "data" in result and "Get" in result["data"]:
-            objects = result["data"]["Get"][class_name]
-            for i, obj in enumerate(objects):
-                print(f"\nResult {i + 1}:")
-                print(f"Source: {obj['source']} (Page {obj['page']})")
-                print(f"Content: {obj['content'][:150]}...")
-        else:
-            print("No results found or unexpected result format")
+        except Exception as e:
+            print(f"\n❌ An error occurred during schema creation or data import: {str(e)}")
+            # Make sure to close the client connection even if an error occurs
+            if 'client' in locals():
+                client.close()
+            raise
 
     except Exception as e:
-        print(f"❌ An error occurred: {str(e)}")
+        print(f"\n❌ An error occurred: {str(e)}")
+        print("\nDetailed error information:")
         import traceback
 
         traceback.print_exc()
+        sys.exit(1)
+    finally:
+        # Make sure to close the client connection
+        if 'client' in locals():
+            print("\nClosing Weaviate connection...")
+            client.close()
+
+    print("\n✓ All operations completed successfully!")
